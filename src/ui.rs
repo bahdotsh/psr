@@ -181,15 +181,12 @@ fn draw_cpu_chart<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let chart = Chart::new(datasets)
         .block(
             Block::default()
-                .title(format!(
-                    " CPU Usage: {:.1}% ",
-                    app.system_resources.cpu_usage
-                ))
-                .title_style(
+                .title(Span::styled(
+                    format!(" CPU Usage: {:.1}% ", app.system_resources.cpu_usage),
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -239,15 +236,15 @@ fn draw_memory_chart<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let chart = Chart::new(datasets)
         .block(
             Block::default()
-                .title(format!(
-                    " Memory: {:.1}% ({:.1}/{:.1} GB) ",
-                    memory_percent, used_gb, total_gb
-                ))
-                .title_style(
+                .title(Span::styled(
+                    format!(
+                        " Memory: {:.1}% ({:.1}/{:.1} GB) ",
+                        memory_percent, used_gb, total_gb
+                    ),
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -284,12 +281,12 @@ fn draw_top_cpu_processes<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let barchart = BarChart::default()
         .block(
             Block::default()
-                .title(" Top CPU Processes ")
-                .title_style(
+                .title(Span::styled(
+                    " Top CPU Processes ",
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -333,12 +330,12 @@ fn draw_top_memory_processes<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect
         )
         .block(
             Block::default()
-                .title(" Top Memory Processes ")
-                .title_style(
+                .title(Span::styled(
+                    " Top Memory Processes ",
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -407,16 +404,16 @@ fn draw_processes_tab<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     });
 
     // Create table with header and rows
-    let mut table = Table::new(rows)
+    let table = Table::new(rows)
         .header(header)
         .block(
             Block::default()
-                .title(format!(" Processes ({}) ", app.processes.len()))
-                .title_style(
+                .title(Span::styled(
+                    format!(" Processes ({}) ", app.processes.len()),
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -527,12 +524,12 @@ fn draw_user_processes_tab<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) 
         .header(header)
         .block(
             Block::default()
-                .title(format!(" User Processes ({}) ", user_processes.len()))
-                .title_style(
+                .title(Span::styled(
+                    format!(" User Processes ({}) ", user_processes.len()),
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -622,12 +619,12 @@ fn draw_system_processes_tab<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect
         .header(header)
         .block(
             Block::default()
-                .title(format!(" System Processes ({}) ", system_processes.len()))
-                .title_style(
+                .title(Span::styled(
+                    format!(" System Processes ({}) ", system_processes.len()),
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -745,12 +742,12 @@ fn draw_detailed_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let info_panel = Paragraph::new(info_text)
         .block(
             Block::default()
-                .title(format!(" Process Details: {} ", selected_process.name))
-                .title_style(
+                .title(Span::styled(
+                    format!(" Process Details: {} ", selected_process.name),
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -782,12 +779,12 @@ fn draw_detailed_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let cpu_chart = Chart::new(cpu_dataset)
         .block(
             Block::default()
-                .title(" CPU Usage ")
-                .title_style(
+                .title(Span::styled(
+                    " CPU Usage ",
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -825,15 +822,15 @@ fn draw_detailed_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let memory_sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(
-                    " Memory: {}MB ({:.1}% of total) ",
-                    memory_mb, memory_percent
-                ))
-                .title_style(
+                .title(Span::styled(
+                    format!(
+                        " Memory: {}MB ({:.1}% of total) ",
+                        memory_mb, memory_percent
+                    ),
                     Style::default()
                         .fg(Colors::HEADER)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Colors::BORDER)),
         )
@@ -843,7 +840,7 @@ fn draw_detailed_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     f.render_widget(memory_sparkline, chart_chunks[1]);
 }
 
-fn draw_help_popup<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+fn draw_help_popup<B: Backend>(f: &mut Frame<B>, _app: &App, area: Rect) {
     // Calculate popup size - make it larger for better readability
     let popup_width = 70;
     let popup_height = 20;
@@ -979,12 +976,12 @@ fn draw_help_popup<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let help_paragraph = Paragraph::new(help_text)
         .block(
             Block::default()
-                .title(" Help ")
-                .title_style(
+                .title(Span::styled(
+                    " Help ",
                     Style::default()
                         .fg(Colors::HIGHLIGHT)
                         .add_modifier(Modifier::BOLD),
-                )
+                ))
                 .borders(Borders::ALL)
                 .border_style(
                     Style::default()
