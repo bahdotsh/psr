@@ -2,20 +2,20 @@ mod app;
 mod processes;
 mod ui;
 
+use app::{App, SortKey};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use processes::{ProcessMonitor, ProcessUpdate};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
-use crate::app::{App, SortKey};
-use crate::processes::ProcessMonitor;
-use crate::ui::draw_ui;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Terminal initialization
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -23,24 +23,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app state
-    let process_monitor = ProcessMonitor::new();
-    let mut app = App::new(process_monitor);
+    // Create communication channels
+    let (tx, mut rx) = mpsc::channel(100);
+
+    // Create process monitor and start it in the background
+    let (process_monitor, refresh_sender) = ProcessMonitor::new(tx.clone());
+    tokio::spawn(async move {
+        process_monitor.start_monitoring().await;
+    });
+
+    // Create app with empty initial state
+    let mut app = App::new();
+    app.refresh_sender = Some(refresh_sender);
+    // Display "Loading..." message
+    terminal.draw(|f| ui::draw_loading_screen(f))?;
 
     // Main loop
     loop {
-        // Check if we should refresh data before drawing
-        if app.should_refresh_data() {
-            app.refresh_all_data();
+        // Process any updates from the background task
+        while let Ok(update) = rx.try_recv() {
+            match update {
+                ProcessUpdate::ProcessList(processes) => {
+                    app.processes = processes;
+                    app.update_selection();
+                    app.sort_processes();
+                }
+                ProcessUpdate::SystemInfo(cpu, used, total) => {
+                    app.system_resources.update(cpu, used, total);
+                }
+                ProcessUpdate::LoadingStatus(status) => {
+                    app.loading_status = status;
+                }
+            }
         }
 
-        // Draw UI only when needed (reduces CPU usage)
+        // Draw UI if needed
         if app.should_refresh_ui() {
-            terminal.draw(|f| draw_ui(f, &mut app))?;
-            app.refresh_ui(); // Mark UI as refreshed
+            terminal.draw(|f| ui::draw_ui(f, &mut app))?;
+            app.refresh_ui();
         }
 
-        // Poll events with short timeout to stay responsive
+        // Poll for events with a short timeout to keep things responsive
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 // Check if Ctrl is being pressed
@@ -49,9 +72,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match (key.code, ctrl_pressed) {
                     // Ctrl+key combinations for commands
                     (KeyCode::Char('q'), true) | (KeyCode::Esc, _) | (KeyCode::Char('c'), true) => {
-                        break
+                        if !app.filter.is_empty() {
+                            app.clear_filter();
+                        } else {
+                            break; // Only exit if filter is empty
+                        }
                     }
-                    (KeyCode::Char('r'), true) => app.refresh_all_data(),
+                    (KeyCode::Char('r'), true) => {
+                        // Request an immediate refresh
+                        if let Some(tx) = &app.refresh_sender {
+                            let _ = tx.try_send(());
+                        }
+                    }
                     (KeyCode::Char('k'), true) => app.kill_selected_process(),
                     (KeyCode::Char('h'), true) => app.toggle_help(),
 

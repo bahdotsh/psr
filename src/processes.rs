@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sysinfo::CpuExt;
-use sysinfo::{PidExt, ProcessExt, System, SystemExt};
+use sysinfo::{CpuExt, PidExt, ProcessExt, System, SystemExt};
+use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::Mutex;
+use tokio::task;
+use tokio::time::interval;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProcessStatus {
@@ -88,6 +92,14 @@ impl ProcessInfo {
     }
 }
 
+// Updates that can be sent from the background task
+#[derive(Clone)]
+pub enum ProcessUpdate {
+    ProcessList(Vec<ProcessInfo>),
+    SystemInfo(f32, u64, u64), // cpu, used_mem, total_mem
+    LoadingStatus(String),
+}
+
 // Cache for user information to reduce system calls
 struct UserCache {
     cache: HashMap<u32, String>,
@@ -102,7 +114,7 @@ impl UserCache {
         }
     }
 
-    fn get_user(&mut self, pid: u32) -> String {
+    async fn get_user(&mut self, pid: u32) -> String {
         // Refresh cache every 30 seconds
         if self.last_refresh.elapsed() > Duration::from_secs(30) {
             self.cache.clear();
@@ -114,13 +126,27 @@ impl UserCache {
         }
 
         let user = if cfg!(unix) {
-            Command::new("ps")
-                .args(&["-o", "user=", "-p", &pid.to_string()])
-                .output()
-                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-                .unwrap_or_else(|_| "unknown".to_string())
+            // Use spawn_blocking to avoid blocking the async runtime
+            let pid_str = pid.to_string();
+            match task::spawn_blocking(move || {
+                Command::new("ps")
+                    .args(&["-o", "user=", "-p", &pid_str])
+                    .output()
+            })
+            .await
+            {
+                Ok(Ok(output)) => {
+                    let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if username.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        username
+                    }
+                }
+                _ => "unknown".to_string(),
+            }
         } else {
-            "unknown".to_string() // Simplified for Windows
+            "unknown".to_string() // Fallback for non-Unix systems
         };
 
         self.cache.insert(pid, user.clone());
@@ -142,7 +168,7 @@ impl ThreadCache {
         }
     }
 
-    fn get_thread_count(&mut self, pid: u32) -> Option<usize> {
+    async fn get_thread_count(&mut self, pid: u32) -> Option<usize> {
         // Only refresh thread counts every 5 seconds
         if self.last_refresh.elapsed() > Duration::from_secs(5) {
             self.cache.clear();
@@ -154,16 +180,22 @@ impl ThreadCache {
         }
 
         if cfg!(unix) {
-            let thread_count = Command::new("ps")
-                .args(&["-o", "nlwp=", "-p", &pid.to_string()])
-                .output()
-                .ok()
-                .and_then(|output| {
-                    String::from_utf8_lossy(&output.stdout)
-                        .trim()
-                        .parse::<usize>()
-                        .ok()
-                });
+            let pid_str = pid.to_string();
+            let thread_count = tokio::task::spawn_blocking(move || {
+                Command::new("ps")
+                    .args(&["-o", "nlwp=", "-p", &pid_str])
+                    .output()
+                    .ok()
+                    .and_then(|output| {
+                        String::from_utf8_lossy(&output.stdout)
+                            .trim()
+                            .parse::<usize>()
+                            .ok()
+                    })
+            })
+            .await
+            .ok()
+            .flatten();
 
             if let Some(count) = thread_count {
                 self.cache.insert(pid, count);
@@ -177,107 +209,275 @@ impl ThreadCache {
 }
 
 pub struct ProcessMonitor {
-    system: System,
-    user_cache: UserCache,
-    thread_cache: ThreadCache,
-    process_cache: HashMap<u32, ProcessInfo>,
-    last_full_refresh: Instant,
+    system: Arc<Mutex<System>>,
+    user_cache: Arc<Mutex<UserCache>>,
+    thread_cache: Arc<Mutex<ThreadCache>>,
+    process_cache: Arc<Mutex<HashMap<u32, ProcessInfo>>>,
+    last_full_refresh: Arc<Mutex<Instant>>,
+    tx: Sender<ProcessUpdate>,
+    refresh_receiver: mpsc::Receiver<()>,
 }
 
+const BATCH_SIZE: usize = 50; // Process information in batches
+
 impl ProcessMonitor {
-    pub fn new() -> Self {
+    pub fn new(tx: Sender<ProcessUpdate>) -> (Self, mpsc::Sender<()>) {
         let mut system = System::new_all();
         system.refresh_all();
 
-        Self {
-            system,
-            user_cache: UserCache::new(),
-            thread_cache: ThreadCache::new(),
-            process_cache: HashMap::new(),
-            last_full_refresh: Instant::now(),
+        // Create a channel for requesting refreshes
+        let (refresh_tx, refresh_rx) = mpsc::channel(10);
+
+        // Store the refresh sender in the app
+        let clone_tx = tx.clone();
+        tokio::spawn(async move {
+            // Provide the refresh sender to the app
+            let update = ProcessUpdate::LoadingStatus("Starting up...".to_string());
+            let _ = clone_tx.send(update).await;
+        });
+
+        let monitor = Self {
+            system: Arc::new(Mutex::new(system)),
+            user_cache: Arc::new(Mutex::new(UserCache::new())),
+            thread_cache: Arc::new(Mutex::new(ThreadCache::new())),
+            process_cache: Arc::new(Mutex::new(HashMap::new())),
+            last_full_refresh: Arc::new(Mutex::new(Instant::now())),
+            tx,
+            refresh_receiver: refresh_rx,
+        };
+
+        (monitor, refresh_tx)
+    }
+
+    pub fn get_refresh_sender(&self) -> mpsc::Sender<()> {
+        let (tx, _) = mpsc::channel(10); // Create a dummy sender
+        tx
+    }
+
+    pub async fn start_monitoring(mut self) {
+        // First, send initial loading message
+        let _ = self
+            .tx
+            .send(ProcessUpdate::LoadingStatus(
+                "Initializing system monitor...".to_string(),
+            ))
+            .await;
+
+        // Start with a system info update
+        {
+            let system = self.system.lock().await;
+            let cpu_usage = system.global_cpu_info().cpu_usage();
+            let total_memory = system.total_memory();
+            let used_memory = system.used_memory();
+            let _ = self
+                .tx
+                .send(ProcessUpdate::SystemInfo(
+                    cpu_usage,
+                    used_memory,
+                    total_memory,
+                ))
+                .await;
+        }
+
+        // Initial process list
+        self.collect_and_send_processes(true).await;
+
+        // Clear loading status after initial load is complete
+        let _ = self
+            .tx
+            .send(ProcessUpdate::LoadingStatus("".to_string()))
+            .await;
+
+        // Now start regular monitoring
+        let mut interval_timer = interval(Duration::from_millis(1000));
+
+        loop {
+            tokio::select! {
+                // Check for refresh requests
+                _ = self.refresh_receiver.recv() => {
+                    let _ = self.tx.send(ProcessUpdate::LoadingStatus("Manual refresh requested...".to_string())).await;
+                    self.collect_and_send_processes(true).await;
+                }
+
+                // Regular timer-based updates
+                _ = interval_timer.tick() => {
+                    self.collect_and_send_processes(false).await;
+
+                    // Update system info every tick
+                    let system = self.system.lock().await;
+                    let cpu_usage = system.global_cpu_info().cpu_usage();
+                    let total_memory = system.total_memory();
+                    let used_memory = system.used_memory();
+                    let _ = self.tx.send(ProcessUpdate::SystemInfo(cpu_usage, used_memory, total_memory)).await;
+                }
+            }
         }
     }
 
-    // Efficient process data collection
-    pub fn get_processes(&mut self) -> Vec<ProcessInfo> {
-        // Full refresh every 10 seconds, partial refresh for CPU/memory otherwise
-        let is_full_refresh = self.last_full_refresh.elapsed() > Duration::from_secs(10);
+    async fn collect_and_send_processes(&self, force_full_refresh: bool) {
+        // Determine if we need a full refresh
+        let mut last_full_refresh = self.last_full_refresh.lock().await;
+        let is_full_refresh =
+            force_full_refresh || last_full_refresh.elapsed() > Duration::from_secs(10);
 
         if is_full_refresh {
-            self.system.refresh_all();
-            self.last_full_refresh = Instant::now();
+            let _ = self
+                .tx
+                .send(ProcessUpdate::LoadingStatus(
+                    "Collecting process data...".to_string(),
+                ))
+                .await;
+
+            // Full refresh of system data
+            {
+                let mut system = self.system.lock().await;
+                system.refresh_all();
+            }
+            *last_full_refresh = Instant::now();
         } else {
-            self.system.refresh_processes();
-            self.system.refresh_cpu();
-            self.system.refresh_memory();
+            // Partial refresh
+            let mut system = self.system.lock().await;
+            system.refresh_processes();
+            system.refresh_cpu();
+            system.refresh_memory();
         }
 
+        // Process information
+        let processes = self.get_processes(is_full_refresh).await;
+
+        // Send the updated process list
+        let _ = self.tx.send(ProcessUpdate::ProcessList(processes)).await;
+
+        // Clear loading status once done
+        if is_full_refresh {
+            let _ = self
+                .tx
+                .send(ProcessUpdate::LoadingStatus("".to_string()))
+                .await;
+        }
+    }
+
+    // Get processes in an async-friendly way
+    async fn get_processes(&self, is_full_refresh: bool) -> Vec<ProcessInfo> {
+        let mut process_cache = self.process_cache.lock().await;
         let mut processes = Vec::new();
         let mut active_pids = HashSet::new();
 
-        for (pid, process) in self.system.processes() {
-            let pid_u32 = pid.as_u32();
-            active_pids.insert(pid_u32);
-
-            // Convert status
-            let status = match process.status() {
-                sysinfo::ProcessStatus::Run => ProcessStatus::Running,
-                sysinfo::ProcessStatus::Sleep => ProcessStatus::Sleeping,
-                sysinfo::ProcessStatus::Stop => ProcessStatus::Stopped,
-                sysinfo::ProcessStatus::Zombie => ProcessStatus::Zombie,
-                _ => ProcessStatus::Unknown,
-            };
-
-            // Only fetch expensive information on full refresh
-            let (user, threads, parent) =
-                if is_full_refresh || !self.process_cache.contains_key(&pid_u32) {
+        // Collect process data first while holding the lock
+        let system_processes: Vec<(
+            sysinfo::Pid,
+            Vec<String>,
+            String,
+            f32,
+            u64,
+            sysinfo::ProcessStatus,
+            u64,
+            Option<sysinfo::Pid>,
+        )> = {
+            let system = self.system.lock().await;
+            system
+                .processes()
+                .iter()
+                .map(|(pid, process)| {
                     (
-                        self.user_cache.get_user(pid_u32),
-                        self.thread_cache.get_thread_count(pid_u32),
-                        process.parent().map(|p| p.as_u32()),
+                        *pid,
+                        process.cmd().to_vec(),
+                        process.name().to_string(),
+                        process.cpu_usage(),
+                        process.memory(),
+                        process.status(),
+                        process.run_time(),
+                        process.parent(),
                     )
-                } else if let Some(cached) = self.process_cache.get(&pid_u32) {
-                    (cached.user.clone(), cached.threads, cached.parent)
-                } else {
-                    ("unknown".to_string(), None, None)
+                })
+                .collect()
+        };
+
+        // Process in batches to avoid blocking for too long
+        for chunk in system_processes.chunks(BATCH_SIZE) {
+            let mut batch_processes = Vec::with_capacity(chunk.len());
+
+            for &(pid, ref cmd, ref name, cpu_usage, memory, status, run_time, parent) in chunk {
+                let pid_u32 = pid.as_u32();
+                active_pids.insert(pid_u32);
+
+                // Convert status
+                let status = match status {
+                    sysinfo::ProcessStatus::Run => ProcessStatus::Running,
+                    sysinfo::ProcessStatus::Sleep => ProcessStatus::Sleeping,
+                    sysinfo::ProcessStatus::Stop => ProcessStatus::Stopped,
+                    sysinfo::ProcessStatus::Zombie => ProcessStatus::Zombie,
+                    _ => ProcessStatus::Unknown,
                 };
 
-            // Update existing process or create new
-            if let Some(cached_process) = self.process_cache.get_mut(&pid_u32) {
-                cached_process.update_history(process.cpu_usage(), process.memory());
+                // Only fetch expensive information on full refresh
+                let (user, threads, parent_pid) =
+                    if is_full_refresh || !process_cache.contains_key(&pid_u32) {
+                        let user = if is_full_refresh {
+                            let mut user_cache = self.user_cache.lock().await;
+                            user_cache.get_user(pid_u32).await
+                        } else {
+                            "fetching...".to_string()
+                        };
 
-                // Only update these fields on full refresh
-                if is_full_refresh {
-                    cached_process.status = status;
-                    cached_process.user = user;
-                    cached_process.threads = threads;
-                    cached_process.parent = parent;
-                    cached_process.cmd = process.cmd().to_vec();
+                        let threads = if is_full_refresh {
+                            let mut thread_cache = self.thread_cache.lock().await;
+                            thread_cache.get_thread_count(pid_u32).await
+                        } else {
+                            None
+                        };
+
+                        (user, threads, parent.map(|p| p.as_u32()))
+                    } else if let Some(cached) = process_cache.get(&pid_u32) {
+                        (cached.user.clone(), cached.threads, cached.parent)
+                    } else {
+                        ("unknown".to_string(), None, None)
+                    };
+
+                // Update existing process or create new
+                if let Some(cached_process) = process_cache.get_mut(&pid_u32) {
+                    cached_process.update_history(cpu_usage, memory);
+
+                    // Only update these fields on full refresh
+                    if is_full_refresh {
+                        cached_process.status = status;
+                        cached_process.user = user;
+                        cached_process.threads = threads;
+                        cached_process.parent = parent_pid;
+                        cached_process.cmd = cmd.clone();
+                    }
+
+                    batch_processes.push(cached_process.clone());
+                } else {
+                    // New process
+                    let process_info = ProcessInfo::new(
+                        pid_u32,
+                        name.clone(),
+                        cpu_usage,
+                        memory,
+                        status,
+                        user,
+                        Duration::from_secs(run_time),
+                        cmd.clone(),
+                        threads,
+                        parent_pid,
+                    );
+                    process_cache.insert(pid_u32, process_info.clone());
+                    batch_processes.push(process_info);
                 }
+            }
 
-                processes.push(cached_process.clone());
-            } else {
-                // New process
-                let process_info = ProcessInfo::new(
-                    pid_u32,
-                    process.name().to_string(),
-                    process.cpu_usage(),
-                    process.memory(),
-                    status,
-                    user,
-                    Duration::from_secs(process.run_time()),
-                    process.cmd().to_vec(),
-                    threads,
-                    parent,
-                );
-                self.process_cache.insert(pid_u32, process_info.clone());
-                processes.push(process_info);
+            processes.extend(batch_processes);
+
+            // Small delay between batches to avoid blocking UI
+            if chunk.len() == BATCH_SIZE {
+                // No need to drop system here anymore
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }
 
         // Clean up processes that no longer exist
-        self.process_cache
-            .retain(|pid, _| active_pids.contains(pid));
+        process_cache.retain(|pid, _| active_pids.contains(pid));
 
         processes
     }
@@ -299,17 +499,5 @@ impl ProcessMonitor {
         } else {
             false
         }
-    }
-
-    // Get system-wide CPU and memory information
-    pub fn get_system_info(&mut self) -> (f32, u64, u64) {
-        self.system.refresh_cpu();
-        self.system.refresh_memory();
-
-        let cpu_usage = self.system.global_cpu_info().cpu_usage();
-        let total_memory = self.system.total_memory();
-        let used_memory = self.system.used_memory();
-
-        (cpu_usage, used_memory, total_memory)
     }
 }

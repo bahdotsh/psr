@@ -1,5 +1,6 @@
-use crate::processes::{ProcessInfo, ProcessMonitor};
+use crate::processes::ProcessInfo;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum SortKey {
@@ -11,6 +12,7 @@ pub enum SortKey {
     User,
     StartTime,
 }
+
 #[allow(dead_code)]
 impl SortKey {
     pub fn as_str(&self) -> &'static str {
@@ -67,7 +69,6 @@ impl SystemResources {
 }
 
 pub struct App {
-    pub process_monitor: ProcessMonitor,
     pub processes: Vec<ProcessInfo>,
     pub selected_index: usize,
     pub previous_selected_pid: Option<u32>, // Track selected process between updates
@@ -82,12 +83,13 @@ pub struct App {
     data_refresh_interval: Duration,
     pub filter: String,
     pub show_help: bool,
+    pub loading_status: String,
+    pub refresh_sender: Option<mpsc::Sender<()>>,
 }
 
 impl App {
-    pub fn new(process_monitor: ProcessMonitor) -> Self {
-        let mut app = Self {
-            process_monitor,
+    pub fn new() -> Self {
+        Self {
             processes: Vec::new(),
             selected_index: 0,
             previous_selected_pid: None,
@@ -102,9 +104,13 @@ impl App {
             data_refresh_interval: Duration::from_millis(1000), // 1 second data updates
             filter: String::new(),
             show_help: false,
-        };
-        app.refresh_all_data();
-        app
+            loading_status: "Initializing...".to_string(),
+            refresh_sender: None,
+        }
+    }
+
+    pub fn set_refresh_sender(&mut self, sender: mpsc::Sender<()>) {
+        self.refresh_sender = Some(sender);
     }
 
     pub fn next(&mut self) {
@@ -141,45 +147,57 @@ impl App {
         self.show_help = !self.show_help;
     }
 
-    // Smoothly update data without disrupting navigation
-    pub fn refresh_all_data(&mut self) {
-        // Remember which process was selected
-        let selected_pid = if !self.processes.is_empty() {
+    // Update selection after process list changes
+    pub fn update_selection(&mut self) {
+        // If we have a previous selection, try to maintain it
+        let previous_pid = if !self.processes.is_empty() {
             Some(self.processes[self.selected_index].pid)
         } else {
             self.previous_selected_pid
         };
 
-        // Update system resource info
-        let (cpu, used_mem, total_mem) = self.process_monitor.get_system_info();
-        self.system_resources.update(cpu, used_mem, total_mem);
-
-        // Get updated processes
-        self.processes = self.process_monitor.get_processes();
-
-        // Apply filtering if needed
+        // If filter is active, filter the processes but don't modify the original vector
         if !self.filter.is_empty() {
             let filter = self.filter.to_lowercase();
-            self.processes.retain(|p| {
-                p.name.to_lowercase().contains(&filter)
-                    || p.pid.to_string().contains(&filter)
-                    || p.user.to_lowercase().contains(&filter)
-            });
+            let filtered_processes: Vec<_> = self
+                .processes
+                .iter()
+                .filter(|p| {
+                    p.name.to_lowercase().contains(&filter)
+                        || p.pid.to_string().contains(&filter)
+                        || p.user.to_lowercase().contains(&filter)
+                })
+                .cloned()
+                .collect();
+
+            // Replace processes with filtered version
+            self.processes = filtered_processes;
         }
 
-        // Sort processes
-        self.sort_processes();
+        // Ensure selection is within bounds
+        if self.processes.is_empty() {
+            self.selected_index = 0;
+        } else if self.selected_index >= self.processes.len() {
+            self.selected_index = self.processes.len() - 1;
+        }
 
-        // Maintain selection through updates
-        if let Some(pid) = selected_pid {
+        // Try to maintain previous selection if possible
+        if let Some(pid) = previous_pid {
             if let Some(index) = self.processes.iter().position(|p| p.pid == pid) {
                 self.selected_index = index;
-            } else if !self.processes.is_empty() {
-                self.selected_index = 0;
             }
         }
+    }
 
-        self.last_data_refresh = Instant::now();
+    pub fn clear_filter(&mut self) {
+        if !self.filter.is_empty() {
+            self.filter.clear();
+
+            // Request a full refresh to restore the full process list
+            if let Some(tx) = &self.refresh_sender {
+                let _ = tx.try_send(());
+            }
+        }
     }
 
     pub fn should_refresh_ui(&self) -> bool {
@@ -284,23 +302,39 @@ impl App {
             }
         }
     }
-
     pub fn kill_selected_process(&mut self) {
-        if !self.processes.is_empty() {
-            let pid = self.processes[self.selected_index].pid;
-            self.process_monitor.kill_process(pid);
-            self.refresh_all_data();
+        if self.processes.is_empty() {
+            return;
+        }
+
+        let pid = self.processes[self.selected_index].pid;
+
+        // Use the system command directly
+        if cfg!(unix) {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .status();
+        } else if cfg!(windows) {
+            let _ = std::process::Command::new("taskkill")
+                .args(&["/F", "/PID", &pid.to_string()])
+                .status();
+        }
+
+        // Request a refresh after killing
+        if let Some(tx) = &self.refresh_sender {
+            let _ = tx.try_send(());
         }
     }
 
     pub fn add_to_filter(&mut self, c: char) {
         self.filter.push(c);
-        self.refresh_all_data(); // Apply filter immediately
+        self.update_selection(); // Apply filter immediately
     }
 
     pub fn backspace_filter(&mut self) {
         self.filter.pop();
-        self.refresh_all_data(); // Apply filter immediately
+        self.update_selection(); // Apply filter immediately
     }
 
     // Get the top CPU and memory processes for dashboard

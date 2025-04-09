@@ -13,7 +13,6 @@ use std::time::Duration;
 use crate::app::{App, SortKey};
 
 // Collection of color constants
-
 struct Colors;
 #[allow(dead_code)]
 impl Colors {
@@ -32,6 +31,45 @@ impl Colors {
 
 pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let size = f.size();
+
+    // Show loading overlay if there's a loading status
+    if !app.loading_status.is_empty() {
+        let loading_area = ratatui::layout::Rect {
+            x: size.width / 4,
+            y: size.height / 2 - 2,
+            width: size.width / 2,
+            height: 4,
+        };
+
+        let loading_text = vec![
+            Spans::from(vec![Span::styled(
+                "PSR",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Spans::from(vec![Span::raw("")]),
+            Spans::from(vec![Span::styled(
+                format!("⣾ {}...", app.loading_status),
+                Style::default().fg(Color::White),
+            )]),
+        ];
+
+        let loading_paragraph = Paragraph::new(loading_text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(Span::styled(
+                        " Loading ",
+                        Style::default().fg(Color::Yellow),
+                    )),
+            )
+            .alignment(ratatui::layout::Alignment::Center);
+
+        f.render_widget(loading_paragraph, loading_area);
+        return;
+    }
 
     // Create the layout
     let chunks = Layout::default()
@@ -652,6 +690,44 @@ fn draw_system_processes_tab<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect
 
     // Render table
     f.render_stateful_widget(table, area, &mut state);
+}
+
+pub fn draw_loading_screen<B: Backend>(f: &mut Frame<B>) {
+    let size = f.size();
+
+    // Create a centered area for the loading message
+    let loading_area = ratatui::layout::Rect {
+        x: size.width / 4,
+        y: size.height / 2 - 2,
+        width: size.width / 2,
+        height: 4,
+    };
+
+    // Loading message with a spinner symbol
+    let loading_text = vec![
+        Spans::from(vec![Span::styled(
+            "Starting PSR (Process Status Reporter)",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Spans::from(vec![Span::raw("")]),
+        Spans::from(vec![Span::styled(
+            "⣾ Loading system information...",
+            Style::default().fg(Color::White),
+        )]),
+    ];
+
+    let loading_paragraph = Paragraph::new(loading_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(Span::styled(" PSR ", Style::default().fg(Color::Yellow))),
+        )
+        .alignment(ratatui::layout::Alignment::Center);
+
+    f.render_widget(loading_paragraph, loading_area);
 }
 
 fn draw_detailed_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
