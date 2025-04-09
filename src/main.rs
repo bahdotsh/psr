@@ -74,8 +74,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (KeyCode::Char('q'), true) | (KeyCode::Esc, _) | (KeyCode::Char('c'), true) => {
                         if !app.filter.is_empty() {
                             app.clear_filter();
+                        } else if app.show_help {
+                            app.toggle_help(); // Close help tab first
                         } else {
-                            break; // Only exit if filter is empty
+                            break; // Only exit if filter is empty and help is not shown
                         }
                     }
                     (KeyCode::Char('r'), true) => {

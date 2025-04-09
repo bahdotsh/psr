@@ -11,6 +11,7 @@ use ratatui::Frame;
 use std::time::Duration;
 
 use crate::app::{App, SortKey};
+use crate::processes::ProcessInfo;
 
 // Collection of color constants
 struct Colors;
@@ -31,45 +32,6 @@ impl Colors {
 
 pub fn draw_ui<B: Backend>(f: &mut Frame<B>, app: &mut App) {
     let size = f.size();
-
-    // Show loading overlay if there's a loading status
-    if !app.loading_status.is_empty() {
-        let loading_area = ratatui::layout::Rect {
-            x: size.width / 4,
-            y: size.height / 2 - 2,
-            width: size.width / 2,
-            height: 4,
-        };
-
-        let loading_text = vec![
-            Spans::from(vec![Span::styled(
-                "PSR",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Spans::from(vec![Span::raw("")]),
-            Spans::from(vec![Span::styled(
-                format!("⣾ {}...", app.loading_status),
-                Style::default().fg(Color::White),
-            )]),
-        ];
-
-        let loading_paragraph = Paragraph::new(loading_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
-                    .title(Span::styled(
-                        " Loading ",
-                        Style::default().fg(Color::Yellow),
-                    )),
-            )
-            .alignment(ratatui::layout::Alignment::Center);
-
-        f.render_widget(loading_paragraph, loading_area);
-        return;
-    }
 
     // Create the layout
     let chunks = Layout::default()
@@ -917,158 +879,430 @@ fn draw_detailed_view<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
 }
 
 fn draw_help_popup<B: Backend>(f: &mut Frame<B>, _app: &App, area: Rect) {
-    // Calculate popup size - make it larger for better readability
-    let popup_width = 70;
-    let popup_height = 20;
+    // Calculate a centered position for a reasonably sized panel
+    let popup_width = 72;
+    let popup_height = 30;
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
 
     let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
 
-    // Create help text with updated keyboard shortcuts
+    // Add a fancy dimming overlay for the entire screen with high opacity
+    let dim_overlay = Block::default().style(
+        Style::default()
+            .bg(Color::Rgb(20, 20, 30))
+            .fg(Color::Rgb(20, 20, 30)),
+    );
+    f.render_widget(dim_overlay, area);
+
+    // Create artistic header with logo - ensure proper centering
+    let title_text = "PSR - Process Status Reporter";
+    let padding_left = (popup_width as usize - title_text.len() - 4) / 2;
+    let padding_right = popup_width as usize - 4 - padding_left - title_text.len();
+
+    let header = vec![
+        Spans::from(vec![
+            Span::styled("╭", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::styled(
+                "─".repeat(popup_width as usize - 2),
+                Style::default().fg(Color::Rgb(108, 111, 132)),
+            ),
+            Span::styled("╮", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::styled(
+                " ".repeat(padding_left),
+                Style::default().fg(Color::Rgb(248, 248, 242)),
+            ),
+            Span::styled(
+                "P",
+                Style::default()
+                    .fg(Color::Rgb(255, 85, 85))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "S",
+                Style::default()
+                    .fg(Color::Rgb(255, 121, 198))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "R",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" - ", Style::default().fg(Color::Rgb(248, 248, 242))),
+            Span::styled(
+                "Process Status Reporter",
+                Style::default()
+                    .fg(Color::Rgb(139, 233, 253))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " ".repeat(padding_right),
+                Style::default().fg(Color::Rgb(248, 248, 242)),
+            ),
+            Span::styled("  │", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::styled(
+                "─".repeat(popup_width as usize - 2),
+                Style::default().fg(Color::Rgb(68, 71, 90)),
+            ),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+    ];
+
+    // For the sections, ensure consistent spacing
+    let kb_text = "KEYBOARD SHORTCUTS";
+    let kb_padding_left = (popup_width as usize - kb_text.len() - 2) / 2;
+    let kb_padding_right = popup_width as usize - 2 - kb_padding_left - kb_text.len();
+
+    // Create the help text with improved styling and consistent alignment
     let help_text = vec![
-        Spans::from(vec![Span::styled(
-            "KEYBOARD SHORTCUTS",
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Colors::HIGHLIGHT),
-        )]),
-        Spans::from(vec![Span::raw("")]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::styled(" ".repeat(kb_padding_left), Style::default()),
             Span::styled(
-                "Ctrl+q, Esc, Ctrl+c",
+                kb_text,
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(241, 250, 140))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Quit application"),
+            Span::styled(" ".repeat(kb_padding_right), Style::default()),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
             Span::styled(
-                "Ctrl+r",
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                "─".repeat(popup_width as usize - 4),
+                Style::default().fg(Color::Rgb(108, 111, 132)),
             ),
-            Span::raw(" - Refresh processes immediately"),
+            Span::raw(" "),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Navigation section - ensure consistent column alignment
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                "NAVIGATION:",
+                Style::default()
+                    .fg(Color::Rgb(255, 121, 198))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 14)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
             Span::styled(
-                "Ctrl+k",
+                "↑/↓        - Navigate through the list of processes",
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Kill selected process"),
+            Span::raw(" ".repeat(popup_width as usize - 55)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
             Span::styled(
-                "Ctrl+h",
+                "←/→, Tab   - Switch to the next tab",
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Show/hide this help"),
+            Span::raw(" ".repeat(popup_width as usize - 42)),
+            Span::styled("   │", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
             Span::styled(
-                "↑/↓",
+                "Shift+Tab  - Switch to the previous tab",
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Navigate through processes"),
+            // Span::raw("  - Switch to the previous tab"),
+            Span::raw(" ".repeat(popup_width as usize - 44)),
+            Span::styled(" │", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Add a space between sections with a subtle separator
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                "┄".repeat(popup_width as usize - 4),
+                Style::default().fg(Color::Rgb(68, 71, 90)),
+            ),
+            Span::raw(" "),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Sorting section - maintain consistent column alignment
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                "SORTING:",
+                Style::default()
+                    .fg(Color::Rgb(255, 121, 198))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 11)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
             Span::styled(
-                "←/→, Tab, Shift+Tab",
+                "Space      - Toggle between ascending and descending sort",
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Change tabs"),
+            Span::raw(" ".repeat(popup_width as usize - 61)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
             Span::styled(
-                "Space",
+                "Ctrl+1     - Sort processes by Process ID (PID)",
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Toggle sort direction"),
+            Span::raw(" ".repeat(popup_width as usize - 51)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
             Span::styled(
-                "Ctrl+1 to Ctrl+7",
+                "Ctrl+2     - Sort processes by Name alphabetically",
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Sort by column"),
+            Span::raw(" ".repeat(popup_width as usize - 54)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
         Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
+            Span::styled(
+                "Ctrl+3     - Sort processes by CPU usage percentage",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 55)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
+            Span::styled(
+                "Ctrl+4     - Sort processes by Memory consumption",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 53)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Separator
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                "┄".repeat(popup_width as usize - 4),
+                Style::default().fg(Color::Rgb(68, 71, 90)),
+            ),
+            Span::raw(" "),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Process actions section - keep aligned with previous sections
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                "PROCESS ACTIONS:",
+                Style::default()
+                    .fg(Color::Rgb(255, 121, 198))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 19)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
+            Span::styled(
+                "Ctrl+r     - Force refresh all process information",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 54)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
+            Span::styled(
+                "Ctrl+k     - Terminate (kill) the currently selected process",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 64)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
+            Span::styled(
+                "Esc        - Clear filter or close this help screen",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 55)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
+            Span::styled(
+                "Ctrl+q     - Exit the application",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 37)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Separator
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                "┄".repeat(popup_width as usize - 4),
+                Style::default().fg(Color::Rgb(68, 71, 90)),
+            ),
+            Span::raw(" "),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Filtering section - maintain column alignment
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                "FILTERING:",
+                Style::default()
+                    .fg(Color::Rgb(255, 121, 198))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 13)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
+            Span::styled(
+                "Any char   - Type characters to filter processes by name",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 60)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw("  "),
+            Span::styled(
+                "Backspace  - Delete the last character from the filter",
+                Style::default()
+                    .fg(Color::Rgb(189, 147, 249))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(popup_width as usize - 58)),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Bottom separator
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                "┄".repeat(popup_width as usize - 4),
+                Style::default().fg(Color::Rgb(68, 71, 90)),
+            ),
+            Span::raw(" "),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
+        // Footer with close instruction - centered properly
+        Spans::from(vec![
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::raw(" "),
+            Span::styled(
+                " ".repeat((popup_width as usize - 40) / 2),
+                Style::default(),
+            ),
+            Span::styled("Press ", Style::default().fg(Color::Rgb(248, 248, 242))),
             Span::styled(
                 "Esc",
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(255, 121, 198))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Clear filter"),
-        ]),
-        Spans::from(vec![
+            Span::styled(" or ", Style::default().fg(Color::Rgb(248, 248, 242))),
             Span::styled(
-                "Any character",
+                "Ctrl+h",
                 Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Colors::HIGHLIGHT),
+                    .fg(Color::Rgb(255, 121, 198))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" - Add to filter"),
+            Span::styled(
+                " to close this help",
+                Style::default().fg(Color::Rgb(248, 248, 242)),
+            ),
+            Span::styled(
+                " ".repeat((popup_width as usize - 44) / 2),
+                Style::default(),
+            ),
+            Span::raw(" "),
+            Span::styled("│", Style::default().fg(Color::Rgb(88, 91, 112))),
         ]),
-        Spans::from(vec![Span::raw("")]),
-        Spans::from(vec![Span::styled(
-            "Press Ctrl+h again to close this help",
-            Style::default()
-                .fg(Colors::ERROR)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        // Bottom border
+        Spans::from(vec![
+            Span::styled("╰", Style::default().fg(Color::Rgb(88, 91, 112))),
+            Span::styled(
+                "─".repeat(popup_width as usize - 2),
+                Style::default().fg(Color::Rgb(108, 111, 132)),
+            ),
+            Span::styled("╯", Style::default().fg(Color::Rgb(88, 91, 112))),
+        ]),
     ];
 
-    // Add a semi-transparent background behind the popup for better visibility
-    let shadow_area = Rect {
-        x: 0,
-        y: 0,
-        width: area.width,
-        height: area.height,
-    };
+    // Combine header and content with properly aligned rows
+    let all_content = [header, help_text].concat();
 
-    let background = Block::default().style(
-        Style::default()
-            .bg(Color::Rgb(0, 0, 0))
-            .fg(Color::Rgb(0, 0, 0)),
-    );
-    f.render_widget(background, shadow_area);
+    // Create the help panel with visible styling
+    let help_paragraph = Paragraph::new(all_content)
+        .alignment(ratatui::layout::Alignment::Left)
+        .style(Style::default().bg(Color::Rgb(40, 42, 54))); // Dark background for the help panel
 
-    // Create a more visible help panel with contrasting background
-    let help_paragraph = Paragraph::new(help_text)
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    " Help ",
-                    Style::default()
-                        .fg(Colors::HIGHLIGHT)
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .borders(Borders::ALL)
-                .border_style(
-                    Style::default()
-                        .fg(Colors::HIGHLIGHT)
-                        .add_modifier(Modifier::BOLD),
-                ),
-        )
-        .style(Style::default().bg(Color::Rgb(40, 40, 60))) // Dark blue background for better visibility
-        .alignment(ratatui::layout::Alignment::Left) // Left-align text for better readability
-        .wrap(Wrap { trim: true });
-
+    // Render the help panel
     f.render_widget(help_paragraph, popup_area);
 }
 
