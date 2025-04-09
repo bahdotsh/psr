@@ -1,0 +1,9 @@
+[package]
+name = "psr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.25"
+ratatui = "0.20.0" # Updated from tui to ratatui
+sysinfo = "0.28.0"
